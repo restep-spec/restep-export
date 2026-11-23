@@ -15,8 +15,8 @@ Un solo archivo, Node 18+, sin dependencias.
 ## Uso
 
 ```bash
-node tools/restep-export/restep-export.mjs http://localhost:8080/ --to http --out peticiones
-node tools/restep-export/restep-export.mjs discovery.json --to bruno,postman --out exportado \
+npx restep-export http://localhost:8080/ --to http --out peticiones
+npx restep-export discovery.json --to bruno,postman --out exportado \
   --base-url https://api.example.com
 ```
 
