@@ -180,12 +180,25 @@ try {
   ok(books.some((x) => x.request.url.query?.some((q) => q.key === 'fields')), 'hay ejemplo de fields');
   ok(books.some((x) => x.request.url.query?.some((q) => q.key === 'count')), 'hay ejemplo de count');
   ok(books.find((x) => x.name === 'Obtener books')?.event?.[0].script.exec.join('\n').includes('books_etag'), 'obtener guarda la ETag');
+  // §5.9: los recursos sueltos del descubrimiento (la tienda, /shop) salen con su GET y su PATCH.
+  for (const s of Object.keys(disc.singletons ?? {})) ok(existsSync(join(out, 'http', `${s}.http`)), `http: recurso suelto ${s}.http`);
+  const shop = pm.col.item.find((x) => x.name === 'shop')?.item ?? [];
+  ok(shop.some((x) => x.name === 'Obtener shop' && x.request.method === 'GET' && x.request.url.raw === '{{base_url}}/shop'), 'recurso suelto: GET /shop');
+  const shopPatch = shop.find((x) => x.name === 'Actualizar shop')?.request;
+  ok(shopPatch?.method === 'PATCH' && shopPatch.header.some((h) => h.key === 'If-Match' && h.value === '{{shop_etag}}'), 'recurso suelto: PATCH con If-Match');
+  // §3: toda escritura con cuerpo lleva su Content-Type.
+  ok(pm.col.item.flatMap((f) => f.item).every((x) => !x.request.body || x.request.header.some((h) => h.key === 'Content-Type')), 'todo cuerpo con Content-Type');
 
   console.log('2. Peticiones de lectura de los .http contra el servidor');
   const h = await execHttpReads(join(out, 'http'));
   ok(h.reads >= collections.length * 3, `se ejecutan lecturas (${h.reads} de ${h.total})`);
 
   console.log('3. Las escrituras de ejemplo son aceptables: crear y actualizar con la ETag');
+  // El PATCH de ejemplo de la tienda lo acepta el servidor con la ETag de su GET.
+  const sg = await fetch(`http://localhost:${PORT}/shop`);
+  const sp = await fetch(`http://localhost:${PORT}/shop`, { method: 'PATCH', headers: { 'content-type': 'application/merge-patch+json', 'if-match': sg.headers.get('etag') }, body: shopPatch.body.raw });
+  ok(sp.status === 200, `el cuerpo de actualizar shop lo acepta el servidor (${sp.status})`);
+  await fetch(`http://localhost:${PORT}/shop`, { method: 'PATCH', headers: { 'content-type': 'application/merge-patch+json' }, body: JSON.stringify(await sg.json()) });
   const createBody = JSON.parse(byName('Crear en books').body.raw);
   const cr = await fetch(`http://localhost:${PORT}/books`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': `"${crypto.randomUUID()}"` }, body: JSON.stringify(createBody) });
   ok(cr.status === 201, `el cuerpo de crear de books lo acepta el servidor (${cr.status})`);
@@ -194,6 +207,48 @@ try {
   const pr = await fetch(`http://localhost:${PORT}/books/${created.id}`, { method: 'PATCH', headers: { 'content-type': 'application/merge-patch+json', 'if-match': etag }, body: byName('Actualizar books').body.raw });
   ok(pr.status === 200, `el cuerpo de actualizar de books lo acepta el servidor (${pr.status})`);
   await fetch(`http://localhost:${PORT}/books/${created.id}`, { method: 'DELETE' });
+
+  console.log('3b. Subcolecciones, include, relaciones y acciones de la referencia');
+  const vars = Object.fromEntries(pm.col.variable.map((v) => [v.key, v.value]));
+  const expand = (raw) => raw.replace(/\{\{([^}]+)\}\}/g, (_, k) => vars[k]).replace('{{base_url}}', vars.base_url);
+  const pmFolder = (n) => pm.col.item.find((x) => x.name === n)?.item ?? [];
+  const req = (f, n) => pmFolder(f).find((x) => x.name === n)?.request;
+  const call = async (r, extra = {}) => {
+    const res = await fetch(expand(r.url.raw), { method: r.method, headers: Object.fromEntries(r.header.map((x) => [x.key, x.value])), body: r.body?.raw, ...extra });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  };
+  // reviews cuelga de books: la variable del padre es un libro que tiene reseñas, y su id de ejemplo, una de ellas.
+  const revs = await (await fetch(`http://localhost:${PORT}/books/${vars.reviews_path_book_id}/reviews`)).json();
+  ok(revs.items?.some((x) => x.id === vars.reviews_id), `subcolección: el padre de ejemplo (${vars.reviews_path_book_id}) tiene la reseña ${vars.reviews_id}`);
+  ok(req('reviews', 'Obtener reviews')?.url.raw === '{{base_url}}/books/{{reviews_path_book_id}}/reviews/{{reviews_id}}', 'subcolección: ruta del elemento con la plantilla');
+  ok((await call(req('reviews', 'Obtener reviews'))).status === 200, 'subcolección: obtener una reseña da 200');
+  // include con profundidad 2 (products declara include_depth 2) y relaciones con href y type.
+  const incP = req('products', 'Incluir relaciones de products');
+  ok(incP?.url.query.find((q) => q.key === 'include')?.value === 'category,category.parent,category.showcase', `include hasta include_depth 2: ${JSON.stringify(incP?.url.query)}`);
+  const ip = await call(incP);
+  ok(ip.status === 200 && ip.json.items.some((x) => x.category?.parent?.name), 'include: category.parent viene incluido');
+  const ib = await call(req('books', 'Incluir relaciones de books'));
+  const hl = ib.json?.items.map((x) => x.highlight).find(Boolean);
+  ok(!hl || (typeof hl.href === 'string' && (await fetch(`http://localhost:${PORT}${hl.href}`)).status === 200), 'include: highlight lleva href y lleva a la reseña');
+  const ic = await call(req('categories', 'Incluir relaciones de categories'));
+  const shown = (ic.json?.items ?? []).map((x) => x.showcase).filter(Boolean);
+  ok(shown.length && shown.every((x) => ['books', 'products'].includes(x.type)), 'include: showcase lleva type');
+  ok(req('categories', 'Incluir relaciones de categories')?.url.query.find((q) => q.key === 'include')?.value === 'parent,showcase', 'include: categories sin include_depth, solo el primer nivel');
+  // Acciones: GET de colección, POST de elemento con input y no idempotente, idempotentes sin clave.
+  const low = req('products', 'Acción low_stock (colección)');
+  ok(low?.method === 'GET' && !low.body && low.url.raw === '{{base_url}}/products:low_stock', 'acción GET de colección sin cuerpo');
+  ok((await call(low)).json?.items.every((x) => x.stock < 5), 'low_stock responde la lista');
+  const rs = req('products', 'Acción restock (elemento)');
+  ok(rs?.method === 'POST' && JSON.parse(rs.body.raw).quantity >= 1 && rs.header.some((x) => x.key === 'Idempotency-Key'), 'restock: POST con cuerpo de su input e Idempotency-Key');
+  const rsr = await call(rs);
+  ok(rsr.status === 200 && typeof rsr.json?.stock === 'number', `el servidor acepta el restock de ejemplo (${rsr.status})`);
+  const foc = req('authors', 'Acción find_or_create (colección)');
+  ok(foc && !foc.header.some((x) => x.key === 'Idempotency-Key') && JSON.parse(foc.body.raw).name, 'find_or_create: idempotente, sin clave y con name');
+  const f1 = await call(foc), f2 = await call(foc);
+  ok([200, 201].includes(f1.status) && f2.status === 200 && f1.json?.id === f2.json?.id, `find_or_create repetido da el mismo autor (${f1.status}, ${f2.status})`);
+  const it = req('categories', 'Acción inherit_tax (elemento)');
+  ok(it && JSON.parse(it.body.raw) && !it.header.some((x) => x.key === 'Idempotency-Key'), 'inherit_tax: cuerpo {} sin clave');
+  ok((await call(it)).status === 200, 'el servidor acepta inherit_tax');
 
   console.log('4. Con oauth: Authorization: Bearer {{token}} y lecturas con token');
   const outO = join(tmp, 'oauth');
@@ -248,7 +303,63 @@ try {
   ok(pf.col.variable.some((v) => v.key === 'lines_path_id'), 'la variable de la plantilla está en el entorno');
   ok(lines.some((x) => x.name.startsWith('Crear')), 'sin methods declarados, genera todas');
 
-  console.log('6. Errores claros');
+  console.log('6. Borrador 6: versiones, valores desconocidos, id_from, anonymous y enlaces');
+  const d6 = {
+    restep: '1.0-draft.6', profiles: ['core', 'query', 'writes'], extensions: ['actions'], idempotency: { anonymous: false },
+    collections: {
+      tags: { path: '/tags', id_from: 'client', schemas: { create: { type: 'object', required: ['id', 'name'], properties: { id: { type: 'string' }, name: { type: 'string' } } } },
+        filter: { geo: { type: 'geo', ops: ['eq'] }, name: { type: 'string', ops: ['near', 'eq'] } },
+        actions: { go: { on: 'everywhere', safe: true, idempotent: true }, put: { on: 'item', safe: false, idempotent: true, method: 'PUT' }, ok: { on: 'item', safe: false, idempotent: false } } },
+      notes: { path: '/notes', id_from: 'someday', schemas: { create: { type: 'object', required: ['id', 'text'], properties: { id: { type: 'string' }, text: { type: 'string' } } } } },
+      plain: { path: '/plain', schemas: { create: { type: 'object', required: ['id', 'x'], properties: { id: { type: 'string' }, x: { type: 'string' } } } } },
+      shelf: { path: '/shelf', schemas: { create: { type: 'object', required: ['x'], properties: { x: { type: 'string' },
+        kind: { anyOf: [{ type: 'string', oneOf: [{ const: 'a', title: 'A' }, { const: 'b', title: 'B' }] }, { type: 'null' }], default: 'b' } } } } },
+    },
+    singletons: { me: { path: '/me', methods: ['GET'] }, tpl: { path: '/users/{u}/prefs' }, sub: { path: '/x', parent: 'tags' } },
+  };
+  const f6 = join(tmp, 'd6.json');
+  writeFileSync(f6, JSON.stringify(d6));
+  const r8 = await run([f6, '--to', 'postman', '--out', join(tmp, 'd6'), '--name', 'D6']);
+  ok(r8.code === 0, `acepta "1.0-draft.6" (salió ${r8.code}: ${r8.err})`);
+  const c6 = JSON.parse(readFileSync(join(tmp, 'd6', 'D6.postman_collection.json'), 'utf8'));
+  const folder = (n) => c6.item.find((x) => x.name === n)?.item ?? [];
+  const tags = folder('tags');
+  ok(!tags.some((x) => x.name.includes(' geo ')) && tags.some((x) => x.request.url.raw.includes('filter[name]=ejemplo')) && !tags.some((x) => x.request.url.raw.includes('near')),
+    'un filtro de tipo desconocido no se usa; de un filtro solo los operadores conocidos (§4.2)');
+  ok(!tags.some((x) => /Acción (go|put)/.test(x.name)) && tags.some((x) => x.name.startsWith('Acción ok')), 'una acción con on o method desconocidos no se usa (§4.2)');
+  const tagBody = JSON.parse(tags.find((x) => x.name === 'Crear en tags').request.body.raw);
+  ok(/^[0-9a-f-]{36}$/.test(tagBody.id), 'id_from "client": el POST lleva un id aleatorio (§5.1)');
+  ok(!('id' in JSON.parse(folder('notes').find((x) => x.name === 'Crear en notes').request.body.raw)), 'id_from desconocido: el POST no lleva id (§5.1)');
+  ok(!('id' in JSON.parse(folder('plain').find((x) => x.name === 'Crear en plain').request.body.raw)), 'sin id_from: el POST no lleva id (§5.1)');
+  ok(JSON.parse(folder('shelf').find((x) => x.name === 'Crear en shelf').request.body.raw).kind === 'b',
+    'un escalar opcional con default y opciones oneOf de const va en el cuerpo, con su default (§4.3)');
+  ok(!c6.item.flatMap((f) => f.item).some((x) => x.request.header.some((h) => h.key === 'Idempotency-Key')), '"anonymous": false sin credenciales: sin Idempotency-Key (§7.1)');
+  const me = folder('me');
+  ok(me.length === 1 && me[0].request.method === 'GET', 'recurso suelto con methods [GET]: solo GET');
+  ok(!folder('tpl').length && !folder('sub').length && /tpl/.test(r8.err) && /sub/.test(r8.err), 'recurso suelto con plantilla o parent: se ignora y se avisa (§5.9)');
+  for (const v of ['2.0', '1.0-beta', '01.0', '1']) {
+    writeFileSync(f6, JSON.stringify({ ...d6, restep: v }));
+    const r = await run([f6, '--out', join(tmp, 'v')]);
+    ok(r.code === 2 && /Restep 1/.test(r.err), `"restep": "${v}" no es Restep 1: error claro (§1.1)`);
+  }
+  for (const v of ['1.0-rc.1', '1.3']) {
+    writeFileSync(f6, JSON.stringify({ ...d6, restep: v }));
+    ok((await run([f6, '--to', 'http', '--out', join(tmp, 'v')])).code === 0, `"restep": "${v}" se acepta`);
+  }
+  // service-desc a otro origen: se pide sin credenciales; a un esquema que no es https ni el de la raíz, no se pide.
+  {
+    const { createServer } = await import('node:http');
+    const seen = [];
+    const other = createServer((req, res) => { seen.push(req.headers.authorization ?? null); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ restep: '1.0-draft.6', collections: {} })); });
+    await new Promise((r) => other.listen(8974, '127.0.0.1', r));
+    const front = createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/html', link: '<data:application/json,{"restep":"1.0"}>; rel="service-desc", <http://127.0.0.1:8974/d.json>; rel="service-desc"' }); res.end('<p>hola</p>'); });
+    await new Promise((r) => front.listen(8975, '127.0.0.1', r));
+    const r = await run(['http://localhost:8975/', '--to', 'http', '--out', join(tmp, 'sd'), '--token', 'secreto', '-H', 'X-Api-Key: otro']);
+    ok(r.code === 0 && seen.length === 1 && seen[0] === null, `service-desc de otro origen: sin credenciales (§4.3), y el data: no se sigue (§3) (${r.err} ${JSON.stringify(seen)})`);
+    other.close(); front.close();
+  }
+
+  console.log('7. Errores claros');
   const r5 = await run([join(tmp, 'no-existe.json'), '--out', join(tmp, 'y')]);
   ok(r5.code === 2 && /no existe/.test(r5.err), 'archivo inexistente');
   const r6 = await run([fx, '--to', 'insomnia', '--out', join(tmp, 'y')]);
