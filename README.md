@@ -1,18 +1,18 @@
 # restep-export
 
-Genera una colección de peticiones de ejemplo a partir del documento de descubrimiento de una
-API Restep 1 (§4.2), para probarla a mano desde el editor o desde un cliente HTTP:
+Generates a collection of sample requests from the discovery document of a Restep 1 API (§4.2),
+so you can try it by hand from your editor or an HTTP client:
 
-- `http`: archivos `.http`, uno por colección, para REST Client de VS Code y para el cliente
-  HTTP de JetBrains, con `http-client.env.json`, `http-client.private.env.json` (para el token,
-  fuera del control de versiones) y `.vscode/settings.json`.
-- `bruno`: una colección de [Bruno](https://www.usebruno.com/) (`bruno.json`, una carpeta y un
-  `.bru` por petición, y el entorno `environments/local.bru` con el token como secreto).
-- `postman`: una colección Postman v2.1 en JSON, con variables de colección.
+- `http`: `.http` files, one per collection, for VS Code's REST Client and the JetBrains HTTP
+  client, with `http-client.env.json`, `http-client.private.env.json` (for the token, kept out of
+  version control) and `.vscode/settings.json`.
+- `bruno`: a [Bruno](https://www.usebruno.com/) collection (`bruno.json`, one folder and one
+  `.bru` per request, and the `environments/local.bru` environment with the token as a secret).
+- `postman`: a Postman v2.1 collection in JSON, with collection variables.
 
-Un solo archivo, Node 18+, sin dependencias.
+A single file, Node 18+, no dependencies.
 
-## Uso
+## Usage
 
 ```bash
 npx restep-export http://localhost:8080/ --to http --out peticiones
@@ -20,128 +20,130 @@ npx restep-export discovery.json --to bruno,postman --out exportado \
   --base-url https://api.example.com
 ```
 
-| Opción | Qué hace |
+| Option | What it does |
 |---|---|
-| `--to <formatos>` | `http`, `bruno` o `postman`; varios separados por comas. Por defecto, los tres |
-| `--out <carpeta>` | Dónde escribir (por defecto `./restep-export`). Con varios formatos, una subcarpeta por formato |
-| `--base-url <url>` | Valor de `base_url`. Por defecto, la raíz de la API, sin `/` final (las rutas del descubrimiento son relativas a ella, §2); con un archivo, `http://localhost:8080` |
-| `--name <nombre>` | Nombre de la colección (por defecto, `Restep <host>`, o `Restep` con un archivo) |
-| `--auth auto\|bearer\|none` | Añadir `Authorization: Bearer {{token}}`. `auto` (por defecto): solo si la API anuncia `oauth` |
-| `--token <token>` | Token para leer la API al exportar. Nunca se escribe en los archivos |
-| `-H "Nombre: valor"` | Cabecera extra al leer la API (repetible). Tampoco se escribe |
-| `--no-samples` | No pide a la API un id de ejemplo por colección |
+| `--to <formatos>` | `http`, `bruno` or `postman`; several separated by commas. Defaults to all three |
+| `--out <carpeta>` | Where to write (default `./restep-export`). With several formats, one subfolder per format |
+| `--base-url <url>` | Value of `base_url`. Defaults to the API root without a trailing `/` (discovery paths are relative to it, §2); from a file, `http://localhost:8080` |
+| `--name <nombre>` | Collection name (default `Restep <host>`, or `Restep` from a file) |
+| `--auth auto\|bearer\|none` | Add `Authorization: Bearer {{token}}`. `auto` (default): only if the API announces `oauth` |
+| `--token <token>` | Token used to read the API while exporting. Never written to the files |
+| `-H "Nombre: valor"` | Extra header when reading the API (repeatable). Not written either |
+| `--no-samples` | Does not ask the API for a sample id per collection |
 
-Con una URL, lee el descubrimiento de la raíz (o el enlazado con `rel="service-desc"`), los
-esquemas que sean enlaces del mismo origen (§4.3) y el primer elemento de cada colección,
-para usar su `id` como ejemplo. Con un archivo no hace ninguna petición.
+From a URL, it reads the discovery at the root (or the one linked with `rel="service-desc"`), the
+schemas that are same-origin links (§4.3) and the first item of each collection, to use its `id`
+as an example. From a file it makes no requests.
 
-Las credenciales (`--token`, `-H`) solo van al origen de la API: un `service-desc` de otro origen
-se pide sin ellas (§4.3), y un enlace que no es `https` ni del esquema de la raíz (`data:`,
-`file:`) no se sigue (§3).
+Credentials (`--token`, `-H`) only go to the API's origin: a `service-desc` on another origin is
+fetched without them (§4.3), and a link that is neither `https` nor the root's scheme (`data:`,
+`file:`) is not followed (§3).
 
-### Qué entiende del borrador 6
+### What it understands from draft 6
 
-- **Versión** (§1.1): `restep` debe seguir la gramática (`1.0`, `1.0-draft.6`, `1.0-rc.1`…) con
-  versión mayor 1. Otra versión mayor, o un valor sin la gramática, da error: no es un
-  descubrimiento de Restep 1, y tampoco se exporta como si fuera solo `core`.
-- **Valores desconocidos** (§4.2): un filtro con un `type` desconocido no genera petición; de un
-  filtro solo se usan los operadores conocidos; una acción con un `on` o un `method`
-  desconocidos se omite.
-- **`id_from`** (§5.1): con `"client"` el cuerpo de crear lleva un `id` aleatorio (UUID, §13.6);
-  sin `id_from`, con `"server"`, `"either"` o un valor desconocido, no lleva `id`.
-- **Recursos sueltos** (§5.9): cada uno de `singletons` sale como una carpeta (o un `.http`) con
-  «Obtener» y, si `methods` incluye `PATCH` o no se declara, «Actualizar» con merge patch e
-  `If-Match: {{<nombre>_etag}}`. Uno cuya ruta es una plantilla o que lleva `parent` se ignora,
-  con un aviso. Si comparte nombre con una colección, su carpeta se llama `<nombre>-recurso`.
-- **`idempotency.anonymous: false`** (§7.1): si se exporta sin credenciales (sin `--auth bearer`
-  ni `oauth`, sin `--token` ni `-H Authorization`), las peticiones no llevan `Idempotency-Key`.
-- **Partes experimentales** (§1.2): no usa ninguna (`sync`, `batch`, `filter-expr`,
-  `query-method`, `inherit`), así que no depende de la versión declarada.
-- Todo cuerpo de `POST` (crear y acciones) lleva `Content-Type: application/json`, y un `+`
-  literal en un valor de la query sale como `%2B` (§3, §5.2).
+- **Version** (§1.1): `restep` must follow the grammar (`1.0`, `1.0-draft.6`, `1.0-rc.1`…) with
+  major version 1. Another major version, or a value that does not follow the grammar, is an
+  error: it is not a Restep 1 discovery, and it is not exported as if it were just `core` either.
+- **Unknown values** (§4.2): a filter with an unknown `type` generates no request; only the
+  known operators of a filter are used; an action with an unknown `on` or `method` is
+  skipped.
+- **`id_from`** (§5.1): with `"client"` the create body carries a random `id` (UUID, §13.6);
+  without `id_from`, or with `"server"`, `"either"` or an unknown value, it carries no `id`.
+- **Singleton resources** (§5.9): each entry in `singletons` becomes a folder (or a `.http`) with
+  «Obtener» (get) and, if `methods` includes `PATCH` or is not declared, «Actualizar» (update) with
+  merge patch and `If-Match: {{<nombre>_etag}}`. One whose path is a template or that has `parent`
+  is ignored, with a warning. If it shares a name with a collection, its folder is called
+  `<nombre>-recurso`.
+- **`idempotency.anonymous: false`** (§7.1): when exporting without credentials (no `--auth bearer`
+  or `oauth`, no `--token` or `-H Authorization`), requests carry no `Idempotency-Key`.
+- **Experimental parts** (§1.2): it uses none (`sync`, `batch`, `filter-expr`, `query-method`,
+  `inherit`), so it does not depend on the declared version.
+- Every `POST` body (create and actions) carries `Content-Type: application/json`, and a literal
+  `+` in a query value comes out as `%2B` (§3, §5.2).
 
-## Qué genera por colección
+## What it generates per collection
 
-| Petición | Cuándo |
+| Request | When |
 |---|---|
-| Listar, con `limit` (el menor de 10 y `max_limit`) | si `methods` incluye `GET` o no se declara |
-| Un filtro por campo de `filter`, con su primer operador y un valor del tipo declarado (§6.1) | con `query` |
-| Ordenar por las dos primeras claves de `sort`, la primera descendente (§6.2) | con `query` y `sort` |
-| `fields` con dos campos de primer nivel (§6.3) | con `query` |
-| `count=true` (§6.5) | si se declara `count` |
-| Incluir relaciones: `include` con las que declaran `"include": true` y, hasta `include_depth`, las de sus destinos (`category,category.parent`); una relación a varias colecciones solo al final (§9) | con `relations` |
-| Obtener un elemento | si `item_methods` incluye `GET` o no se declara |
-| Crear, con un cuerpo de ejemplo del esquema `create` y `Idempotency-Key` (§7.1) | `POST`; la clave, con `writes` |
-| Actualizar con merge patch e `If-Match: {{<coleccion>_etag}}` (§7.2) | `PATCH`; `If-Match`, con `writes` |
-| Borrar con `If-Match` | `DELETE` |
-| Cada acción, en `/coleccion:nombre` o `/coleccion/{{id}}:nombre`, con su `method` y un cuerpo de su `input`; `Idempotency-Key` si no es idempotente (§11.1) | con `actions` |
+| List, with `limit` (the smaller of 10 and `max_limit`) | if `methods` includes `GET` or is not declared |
+| One filter per `filter` field, with its first operator and a value of the declared type (§6.1) | with `query` |
+| Sort by the first two `sort` keys, the first one descending (§6.2) | with `query` and `sort` |
+| `fields` with two top-level fields (§6.3) | with `query` |
+| `count=true` (§6.5) | if `count` is declared |
+| Include relations: `include` with those declaring `"include": true` and, up to `include_depth`, those of their targets (`category,category.parent`); a relation to several collections only at the end (§9) | with `relations` |
+| Get an item | if `item_methods` includes `GET` or is not declared |
+| Create, with a sample body from the `create` schema and `Idempotency-Key` (§7.1) | `POST`; the key, with `writes` |
+| Update with merge patch and `If-Match: {{<coleccion>_etag}}` (§7.2) | `PATCH`; `If-Match`, with `writes` |
+| Delete with `If-Match` | `DELETE` |
+| Each action, at `/coleccion:nombre` or `/coleccion/{{id}}:nombre`, with its `method` and a body from its `input`; `Idempotency-Key` if it is not idempotent (§11.1) | with `actions` |
 
-Variables: `base_url` y `token` en el entorno; `<coleccion>_id` (id de ejemplo),
-`<coleccion>_etag` (con `writes`) y `<coleccion>_path_<var>` para cada variable de una
-plantilla de URI (subcolecciones, §4.2). Con una API en marcha, esas variables toman el id de un
-elemento del padre (`parent`) que tenga algún elemento en la subcolección, y `<coleccion>_id`
-uno de ellos, para que «Obtener» no dé `404`; sin ejemplos, valen `1`. En Bruno y Postman, «Obtener» guarda la `ETag` en
-`<coleccion>_etag` y «Listar» guarda `next` en `<coleccion>_next`; en los `.http` hay que
-copiarla a mano en la variable de archivo (REST Client y JetBrains tienen sintaxis distintas
-para encadenar respuestas).
+Variables: `base_url` and `token` in the environment; `<coleccion>_id` (sample id),
+`<coleccion>_etag` (with `writes`) and `<coleccion>_path_<var>` for each variable of a URI
+template (subcollections, §4.2). With a running API, those variables take the id of a parent
+item (`parent`) that has some item in the subcollection, and `<coleccion>_id` one of those, so
+that «Obtener» does not return `404`; with no samples, they are `1`. In Bruno and Postman,
+«Obtener» stores the `ETag` in `<coleccion>_etag` and «Listar» (list) stores `next` in
+`<coleccion>_next`; in the `.http` files you have to copy it by hand into the file variable
+(REST Client and JetBrains use different syntaxes for chaining responses).
 
-Los cuerpos de ejemplo llevan los campos requeridos y los escalares opcionales que no son de
-solo lectura; los objetos opcionales (relaciones, mapas de idioma) se omiten para que el
-ejemplo no apunte a un elemento que no existe. Las `Idempotency-Key` son UUID fijos generados
-al exportar, entre comillas como pide Structured Fields: repetir la petición no crea otro
-elemento, que es justo lo que enseña.
+Sample bodies carry the required fields and the optional scalars that are not read-only;
+optional objects (relations, language maps) are left out so the example does not point to an
+item that does not exist. The `Idempotency-Key` values are fixed UUIDs generated at export time,
+quoted as Structured Fields requires: repeating the request does not create another item, which
+is exactly what it shows.
 
-## Pruebas
+## Tests
 
 ```bash
 node tools/restep-export/test.mjs
 ```
 
-Arranca el servidor de referencia en los puertos 8895 y 8896 (este con `RESTEP_TOKEN`), genera
-los tres formatos, comprueba su estructura (Postman v2.1, bloques de `.bru`, `.http`), ejecuta
-con un mini-analizador todas las peticiones de lectura de los `.http` y exige un `2xx`, prueba
-que el servidor acepta los cuerpos de crear y actualizar, y exporta un descubrimiento de
-archivo con acciones, una subcolección y `oauth`. Contra la referencia prueba también la
-subcolección `reviews` (su padre de ejemplo tiene reseñas y «Obtener» da `200`), `include` con
-profundidad 2, la relación `highlight` con `href`, la polimórfica `showcase` con `type`, y que el
-servidor acepta las acciones de ejemplo: `low_stock` (`GET` de colección), `restock` (`POST` de
-elemento con su `input` e `Idempotency-Key`), `find_or_create` e `inherit_tax` (idempotentes, sin
-clave). Prueba también lo del borrador 6: el recurso
-suelto `/shop` de la referencia (y que el servidor acepta su `PATCH`), versiones con sufijo y de
-otra versión mayor, valores desconocidos, `id_from`, `anonymous: false`, recursos sueltos con
-plantilla o `parent`, y un `service-desc` de otro origen (sin credenciales) y con `data:` (no se
-sigue), con dos servidores propios en los puertos 8974 y 8975.
+Starts the reference server on ports 8895 and 8896 (the latter with `RESTEP_TOKEN`), generates
+the three formats, checks their structure (Postman v2.1, `.bru` blocks, `.http`), runs every read
+request in the `.http` files through a mini-parser and requires a `2xx`, checks that the server
+accepts the create and update bodies, and exports a discovery from a file with actions, a
+subcollection and `oauth`. Against the reference it also tests the `reviews` subcollection (its
+sample parent has reviews and «Obtener» returns `200`), `include` with depth 2, the `highlight`
+relation with `href`, the polymorphic `showcase` with `type`, and that the server accepts the
+sample actions: `low_stock` (collection `GET`), `restock` (item `POST` with its `input` and
+`Idempotency-Key`), `find_or_create` and `inherit_tax` (idempotent, no key). It also tests the
+draft 6 items: the reference's `/shop` singleton resource (and that the server accepts its
+`PATCH`), versions with a suffix and with another major version, unknown values, `id_from`,
+`anonymous: false`, singleton resources with a template or `parent`, and a `service-desc` on
+another origin (no credentials) and with `data:` (not followed), with two servers of its own on
+ports 8974 and 8975.
 
-## Límites
+## Limits
 
-- De `relations` solo genera la lectura con `include`: los cuerpos no enlazan relaciones. No
-  cubre `sync`, `batch`, `filter-expr` ni `query-method`.
-- No genera peticiones para los filtros con nombre (`named_filters`, §6.1) ni para `fields` en un
-  recurso suelto (§5.9).
-- No anota los avisos de retirada (`deprecations`, §5.5) en las peticiones que los usan.
-- «Obtener» guarda la cabecera `ETag`; no lee `_etag` del cuerpo, que §7.2 garantiza aunque un
-  proxy debilite la cabecera.
-- Las relaciones con `href` (las de una subcolección o un recurso suelto, §3) no se usan: los
-  cuerpos de ejemplo no llevan relaciones.
-- Sin API en marcha (desde un archivo o con `--no-samples`), las variables de una subcolección
-  valen `1`.
-- Los valores de los filtros son de ejemplo y pueden no devolver elementos (pero sí `200`).
-- El generador de cuerpos solo entiende lo sencillo de JSON Schema (`type`, `enum`, `const`,
-  `default`, `examples`, `anyOf`/`oneOf`, `allOf` plano, `pattern` con unos pocos candidatos,
-  `format`); no sigue `$ref`.
+- From `relations` it only generates the read with `include`: bodies do not link relations. It
+  does not cover `sync`, `batch`, `filter-expr` or `query-method`.
+- It generates no requests for named filters (`named_filters`, §6.1) or for `fields` on a
+  singleton resource (§5.9).
+- It does not annotate deprecation notices (`deprecations`, §5.5) on the requests that use them.
+- «Obtener» stores the `ETag` header; it does not read `_etag` from the body, which §7.2
+  guarantees even if a proxy weakens the header.
+- Relations with `href` (those of a subcollection or a singleton resource, §3) are not used:
+  sample bodies carry no relations.
+- With no running API (from a file or with `--no-samples`), a subcollection's variables are
+  `1`.
+- Filter values are examples and may return no items (but they do return `200`).
+- The body generator only understands the simple parts of JSON Schema (`type`, `enum`, `const`,
+  `default`, `examples`, `anyOf`/`oneOf`, flat `allOf`, `pattern` with a few candidates,
+  `format`); it does not follow `$ref`.
 
-## Dudas sobre la spec
+## Questions about the spec
 
-- Con el descubrimiento en un archivo no hay forma de saber la URL de la API: el documento no
-  declara su propia raíz ni su origen, y sus `path` son rutas absolutas. Por eso existe
-  `--base-url`. ¿Debería el descubrimiento poder declarar su raíz (como `servers` en OpenAPI)?
-- Resuelto en el borrador 6: el cuerpo vacío de una acción es `{}` (§11.1) y toda petición con
-  cuerpo a un recurso de Restep lleva `Content-Type: application/json` (§3).
+- With the discovery in a file there is no way to know the API's URL: the document does not
+  declare its own root or origin, and its `path` values are absolute paths. That is why
+  `--base-url` exists. Should the discovery be able to declare its root (like `servers` in
+  OpenAPI)?
+- Settled in draft 6: an action's empty body is `{}` (§11.1) and every request with a body to a
+  Restep resource carries `Content-Type: application/json` (§3).
 
-## Código y avisos
+## Code and issues
 
-Código y avisos: <https://github.com/restep-spec/restep-export>. Ese repositorio se genera desde la web de
-Restep, donde la herramienta se desarrolla junto a la [especificación](https://restep.wubytes.com/1/) y el servidor de
-referencia: `vendor/` y `schema/` son copias de la web para que las pruebas funcionen solas.
+Code and issues: <https://github.com/restep-spec/restep-export>. That repository is generated from the Restep
+site, where the tool is developed alongside the [specification](https://restep.wubytes.com/1/) and the reference
+server: `vendor/` and `schema/` are copies from the site so the tests run on their own.
 
-Licencia MIT.
+MIT licensed.

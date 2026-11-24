@@ -1,7 +1,7 @@
 {
   "name": "restep-export",
   "version": "0.2.0",
-  "description": "Genera colecciones de peticiones de ejemplo (.http, Bruno, Postman) a partir del descubrimiento de una API Restep 1",
+  "description": "Generates example request collections (.http, Bruno, Postman) from the discovery document of a Restep 1 API",
   "license": "MIT",
   "files": [
     "restep-export.mjs",
