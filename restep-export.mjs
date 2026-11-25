@@ -1,50 +1,50 @@
 #!/usr/bin/env node
-// restep-export · Genera una colección de peticiones de ejemplo a partir del documento de
-// descubrimiento de una API Restep 1 (§4.2): archivos .http (REST Client de VS Code y cliente HTTP
-// de JetBrains), colección de Bruno (.bru) o colección de Postman v2.1.
-// Node 18 o posterior, sin dependencias.  Especificación: https://restep.wubytes.com/1/
+// restep-export · Generates a collection of sample requests from the discovery document of a
+// Restep 1 API (§4.2): .http files (VS Code REST Client and the JetBrains HTTP client),
+// a Bruno collection (.bru) or a Postman v2.1 collection.
+// Node 18 or later, no dependencies.  Specification: https://restep.wubytes.com/1/
 //
-//   node restep-export.mjs http://localhost:8080/ --to http --out peticiones
-//   node restep-export.mjs discovery.json --to bruno,postman --out exportado --base-url https://api.example.com
+//   node restep-export.mjs http://localhost:8080/ --to http --out requests
+//   node restep-export.mjs discovery.json --to bruno,postman --out exported --base-url https://api.example.com
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const FORMATS = ['http', 'bruno', 'postman'];
 
-const HELP = `restep-export ${VERSION} · peticiones de ejemplo a partir del descubrimiento de una API Restep 1
+const HELP = `restep-export ${VERSION} · sample requests from the discovery document of a Restep 1 API
 
-Uso: restep-export <url|discovery.json> --to <bruno|http|postman>[,…] --out <carpeta> [opciones]
+Usage: restep-export <url|discovery.json> --to <bruno|http|postman>[,…] --out <folder> [options]
 
-  --to <formatos>        http, bruno o postman; varios separados por comas (por defecto, los tres)
-  --out <carpeta>        Dónde escribir (por defecto ./restep-export). Con varios formatos,
-                         una subcarpeta por formato
-  --base-url <url>       Valor de base_url (por defecto, la raíz de la API; con un archivo,
+  --to <formats>         http, bruno or postman; several separated by commas (default: all three)
+  --out <folder>         Where to write (default ./restep-export). With several formats,
+                         one subfolder per format
+  --base-url <url>       Value of base_url (default: the API root; with a file,
                          http://localhost:8080)
-  --name <nombre>        Nombre de la colección (por defecto, Restep <host>; con un archivo,
+  --name <name>          Collection name (default: Restep <host>; with a file,
                          Restep)
-  --auth <auto|bearer|none>  Cabecera Authorization: Bearer {{token}}. auto: solo si la API
-                         anuncia la extensión oauth (por defecto)
-  --token <token>        Token para leer el descubrimiento y los ejemplos de la API. No se
-                         escribe en los archivos generados
-  -H, --header "N: v"    Cabecera extra al leer la API (repetible). Tampoco se escribe
-  --no-samples           No pide a la API un id de ejemplo por colección
-  -h, --help             Esta ayuda
+  --auth <auto|bearer|none>  Authorization: Bearer {{token}} header. auto: only if the API
+                         announces the oauth extension (default)
+  --token <token>        Token to read the discovery document and the API's samples. It is
+                         not written to the generated files
+  -H, --header "N: v"    Extra header when reading the API (repeatable). Not written either
+  --no-samples           Do not ask the API for a sample id per collection
+  -h, --help             This help
 
-Variables de entorno de la colección: base_url y token, más <coleccion>_id (un id de ejemplo)
-y, con writes, <coleccion>_etag (para If-Match).
+Collection environment variables: base_url and token, plus <collection>_id (a sample id)
+and, with writes, <collection>_etag (for If-Match).
 
-Código de salida: 0 si ha escrito todo, 2 si no puede (argumentos, red o documento no válido).`;
+Exit code: 0 if everything was written, 2 if it cannot (arguments, network or invalid document).`;
 
-// ── Argumentos ────────────────────────────────────────────────────────────────
+// ── Arguments ─────────────────────────────────────────────────────────────────
 function fail(msg, code = 2) { console.error(`restep-export: ${msg}`); process.exit(code); }
 function usage(msg) { console.error(`${msg}\n\n${HELP}`); process.exit(2); }
 
 function parseArgs(argv) {
   const o = { to: [], out: 'restep-export', baseUrl: null, name: null, auth: 'auto', token: null, headers: {}, samples: true, source: null };
-  const value = (i) => { if (argv[i + 1] === undefined) usage(`${argv[i]} necesita un valor.`); return argv[i + 1]; };
+  const value = (i) => { if (argv[i + 1] === undefined) usage(`${argv[i]} needs a value.`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') { console.log(HELP); process.exit(0); }
@@ -57,35 +57,39 @@ function parseArgs(argv) {
     else if (a === '--no-samples') o.samples = false;
     else if (a === '-H' || a === '--header') {
       const v = value(i++), c = v.indexOf(':');
-      if (c < 1) usage(`Cabecera sin dos puntos: ${v}`);
+      if (c < 1) usage(`Header without a colon: ${v}`);
       o.headers[v.slice(0, c).trim().toLowerCase()] = v.slice(c + 1).trim();
-    } else if (a.startsWith('-')) usage(`Opción desconocida: ${a}`);
-    else if (o.source) usage(`Solo se admite un origen: ${a}`);
+    } else if (a.startsWith('-')) usage(`Unknown option: ${a}`);
+    else if (o.source) usage(`Only one source is accepted: ${a}`);
     else o.source = a;
   }
-  if (!o.source) usage('Falta la URL de la API o el archivo de descubrimiento.');
+  if (!o.source) usage('Missing the API URL or the discovery file.');
   if (!o.to.length) o.to = [...FORMATS];
-  for (const f of o.to) if (!FORMATS.includes(f)) usage(`Formato desconocido: ${f}. Usa ${FORMATS.join(', ')}.`);
-  if (!['auto', 'bearer', 'none'].includes(o.auth)) usage(`--auth admite auto, bearer o none, no ${o.auth}.`);
+  for (const f of o.to) if (!FORMATS.includes(f)) usage(`Unknown format: ${f}. Use ${FORMATS.join(', ')}.`);
+  if (!['auto', 'bearer', 'none'].includes(o.auth)) usage(`--auth accepts auto, bearer or none, not ${o.auth}.`);
   if (o.baseUrl) {
-    try { new URL(o.baseUrl); } catch { usage(`--base-url no es una URL: ${o.baseUrl}`); }
+    try { new URL(o.baseUrl); } catch { usage(`--base-url is not a URL: ${o.baseUrl}`); }
     o.baseUrl = o.baseUrl.replace(/\/+$/, '');
   }
   return o;
 }
 
-// ── Lectura del descubrimiento (§4.2) ─────────────────────────────────────────
+// ── Reading the discovery document (§4.2) ─────────────────────────────────────
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isDiscovery = (d) => isObject(d) && typeof d.restep === 'string';
-// §1.1: la gramática de restep y la versión mayor. Un documento de otra versión mayor, o con un
-// restep que no sigue la gramática, no es de Restep 1: no se exporta (ni se supone core).
+// §1.1: the restep grammar and the major version. A document of another major version, or with a
+// restep that does not follow the grammar, is not Restep 1: it is not exported (core is not assumed).
 const RESTEP_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(draft|rc)\.(0|[1-9][0-9]*))?$/;
 export const isRestep1 = (d) => { const m = RESTEP_VERSION.exec(d.restep); return !!m && m[1] === '1'; };
-// §3: solo se siguen enlaces https o del esquema de la raíz; las credenciales, solo al origen de la API (§4.3).
+// §3: only https links or links of the root's scheme are followed; credentials go only to the API's origin (§4.3).
 const allowedScheme = (u, root) => u.protocol === 'https:' || u.protocol === root.protocol;
-// Valores que este cliente conoce (§4.2): lo que lleva otro se trata como no declarado.
-const FILTER_TYPES = ['string', 'integer', 'number', 'decimal', 'boolean', 'date', 'datetime', 'duration', 'enum'];
-const FILTER_OPS = ['eq', 'ne', 'lt', 'le', 'gt', 'ge', 'in', 'null'];
+// Values this client knows (§4.2): anything else is treated as not declared.
+const FILTER_TYPES = ['string', 'integer', 'number', 'decimal', 'boolean', 'date', 'datetime', 'localdatetime', 'timezone', 'duration', 'enum'];
+const FILTER_OPS = ['eq', 'ne', 'lt', 'le', 'gt', 'ge', 'in', 'nin', 'null', 'prefix', 'contains'];
+// §6.1 and §4.2: a filter whose quantifier this client does not know is not used.
+const usableFilter = (d) => isObject(d) && FILTER_TYPES.includes(d.type) && (d.quantifier === undefined || d.quantifier === 'some');
+// §11.1: the three effects; without effects, or with an unknown value, a client counts all three.
+const EFFECTS = ['destroys', 'external', 'charges'];
 const ACTION_ON = ['item', 'collection'];
 
 function linkTargets(header, rel) {
@@ -102,10 +106,10 @@ async function getJson(url, opts, { credentials = true } = {}) {
   const headers = { accept: 'application/json', ...(credentials ? opts.headers : {}) };
   if (opts.token && credentials) headers.authorization = `Bearer ${opts.token}`;
   let res;
-  try { res = await fetch(url, { headers }); } catch (e) { throw new Error(`no se puede conectar con ${url}: ${e.cause?.message ?? e.message}`); }
+  try { res = await fetch(url, { headers }); } catch (e) { throw new Error(`cannot connect to ${url}: ${e.cause?.message ?? e.message}`); }
   const text = await res.text();
   let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { /* no es JSON */ }
+  try { data = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
   return { status: res.status, headers: res.headers, data };
 }
 
@@ -116,31 +120,32 @@ async function loadDiscovery(opts) {
     if (!root.pathname.endsWith('/')) root.pathname += '/';
     let res = await getJson(root.href, opts);
     if (!isDiscovery(res.data)) {
-      // §4.2: si la raíz está ocupada, el documento se enlaza con rel="service-desc".
+      // §4.2: if the root is taken, the document is linked with rel="service-desc".
       for (const href of linkTargets(res.headers.get('link'), 'service-desc')) {
         let u;
         try { u = new URL(href, root); } catch { continue; }
         if (!allowedScheme(u, root)) continue;
         const d = await getJson(u.href, opts, { credentials: u.origin === root.origin });
-        if (isDiscovery(d.data)) { res = d; break; }
+        // §4.2: the first target that is a discovery document of Restep 1.
+        if (d.status >= 200 && d.status < 300 && isDiscovery(d.data) && isRestep1(d.data)) { res = d; break; }
       }
     }
-    if (res.status === 401) throw new Error(`${root.href} responde 401: pasa --token o -H "Authorization: …".`);
-    if (!isDiscovery(res.data)) throw new Error(`${root.href} no sirve un documento de descubrimiento (un objeto JSON con restep, §4.2); respondió ${res.status}.`);
+    if (res.status === 401) throw new Error(`${root.href} answers 401: pass --token or -H "Authorization: …".`);
+    if (!isDiscovery(res.data)) throw new Error(`${root.href} does not serve a discovery document (a JSON object with restep, §4.2); it answered ${res.status}.`);
     if (!isRestep1(res.data)) throw new Error(notRestep1(res.data));
     return { doc: res.data, origin: root.origin, root };
   }
-  if (!existsSync(src)) throw new Error(`no existe el archivo ${src}.`);
+  if (!existsSync(src)) throw new Error(`the file ${src} does not exist.`);
   let doc;
-  try { doc = JSON.parse(readFileSync(src, 'utf8')); } catch (e) { throw new Error(`${src} no es JSON válido: ${e.message}`); }
-  if (!isDiscovery(doc)) throw new Error(`${src} no es un documento de descubrimiento: le falta el miembro restep (§4.2).`);
+  try { doc = JSON.parse(readFileSync(src, 'utf8')); } catch (e) { throw new Error(`${src} is not valid JSON: ${e.message}`); }
+  if (!isDiscovery(doc)) throw new Error(`${src} is not a discovery document: it lacks the restep member (§4.2).`);
   if (!isRestep1(doc)) throw new Error(notRestep1(doc));
   return { doc, origin: null, root: null };
 }
 
-const notRestep1 = (d) => `el descubrimiento declara "restep": ${JSON.stringify(d.restep)}, que no es una versión de Restep 1 (§1.1); no se exporta.`;
+const notRestep1 = (d) => `the discovery document declares "restep": ${JSON.stringify(d.restep)}, which is not a Restep 1 version (§1.1); nothing is exported.`;
 
-// Un esquema puede ser un enlace (§4.3). Solo se piden los del mismo origen que la API.
+// A schema can be a link (§4.3). Only those of the same origin as the API are requested.
 async function resolveSchema(s, ctx, opts) {
   if (isObject(s)) return s;
   if (typeof s !== 'string' || !ctx.root) return null;
@@ -152,8 +157,8 @@ async function resolveSchema(s, ctx, opts) {
   } catch { return null; }
 }
 
-// ── Valores de ejemplo ────────────────────────────────────────────────────────
-const STRING_CANDIDATES = ['ejemplo', '10.00', '1', '2026-01-01', '2026-01-01T10:00:00Z', 'PT1H', 'es'];
+// ── Sample values ─────────────────────────────────────────────────────────────
+const STRING_CANDIDATES = ['example', '10.00', '1', '2026-01-01', '2026-01-01T10:00:00Z', 'PT1H', 'es'];
 
 function sampleString(s) {
   if (s.format === 'date') return '2026-01-01';
@@ -163,17 +168,17 @@ function sampleString(s) {
   if (s.format === 'uuid') return randomUUID();
   if (typeof s.pattern === 'string') {
     let re;
-    try { re = new RegExp(s.pattern, 'u'); } catch { return 'ejemplo'; }
-    return STRING_CANDIDATES.find((c) => re.test(c)) ?? 'ejemplo';
+    try { re = new RegExp(s.pattern, 'u'); } catch { return 'example'; }
+    return STRING_CANDIDATES.find((c) => re.test(c)) ?? 'example';
   }
-  return 'ejemplo';
+  return 'example';
 }
 
-// Un ejemplo que cumpla el esquema en lo sencillo (tipo, enum, patrón, requeridos). Con
-// writable, un objeto lleva sus requeridos y sus campos escalares opcionales que no son de
-// solo lectura ni empiezan por _; los objetos opcionales (relaciones, mapas de idioma) se omiten.
-function sample(schema, depth = 0) {
-  if (!isObject(schema) || depth > 5) return 'ejemplo';
+// An example that satisfies the schema in simple terms (type, enum, pattern, required). With
+// writable, an object carries its required fields and its optional scalar fields that are not
+// read-only or prefixed with _; optional objects (relations, language maps) are omitted.
+function sample(schema, depth = 0, skip = []) {
+  if (!isObject(schema) || depth > 5) return 'example';
   if ('const' in schema) return schema.const;
   if ('default' in schema) return schema.default;
   if (Array.isArray(schema.examples) && schema.examples.length) return schema.examples[0];
@@ -195,18 +200,18 @@ function sample(schema, depth = 0) {
       const props = isObject(schema.properties) ? schema.properties : {};
       const required = Array.isArray(schema.required) ? schema.required : [];
       for (const [k, p] of Object.entries(props)) {
-        if (k.startsWith('_') || p?.readOnly) continue;
+        if (k.startsWith('_') || p?.readOnly || (depth === 0 && skip.includes(k))) continue;
         if (required.includes(k) || (depth === 0 && isScalar(p) && k !== 'id')) out[k] = sample(p, depth + 1);
       }
       if (!Object.keys(props).length && isObject(schema.additionalProperties)) out.es = sample(schema.additionalProperties, depth + 1);
       return out;
     }
-    default: return 'ejemplo';
+    default: return 'example';
   }
 }
 const isNull = (s) => isObject(s) && (s.type === 'null' || (Array.isArray(s.type) && s.type.length === 1 && s.type[0] === 'null'));
-// Escalar: enum, const que no es objeto, un tipo escalar (aunque detalle sus valores con un
-// oneOf de const, como las opciones de un formulario, apéndice A) o alternativas escalares.
+// Scalar: enum, a const that is not an object, a scalar type (even if it lists its values with a
+// oneOf of const, like form options, appendix A) or scalar alternatives.
 function isScalar(s) {
   if (!isObject(s)) return false;
   if (Array.isArray(s.enum)) return true;
@@ -218,37 +223,39 @@ function isScalar(s) {
   return false;
 }
 
-// El cuerpo de un PATCH de ejemplo: un solo campo escalar que se pueda escribir (merge patch).
-function samplePatch(update, create) {
+// The body of a sample PATCH: a single writable scalar field (merge patch).
+function samplePatch(update, create, skip = []) {
   for (const s of [update, create]) {
     if (!isObject(s?.properties)) continue;
     for (const [k, p] of Object.entries(s.properties)) {
-      if (k === 'id' || k.startsWith('_') || p?.readOnly || !isScalar(p)) continue;
+      if (k === 'id' || k.startsWith('_') || p?.readOnly || skip.includes(k) || !isScalar(p)) continue;
       return { [k]: sample(p, 1) };
     }
   }
   return {};
 }
 
-// Valor de ejemplo para un filtro (§6.1), según su tipo declarado.
+// Sample value for a filter (§6.1), according to its declared type.
 function filterValue(field, decl, coll, op) {
   if (op === 'null') return 'true';
   const one = (i = 0) => {
     switch (decl.type) {
-      case 'enum': return String(decl.values?.[i % (decl.values?.length || 1)] ?? 'ejemplo');
+      case 'enum': return String(decl.values?.[i % (decl.values?.length || 1)] ?? 'example');
       case 'integer': return String(2000 + i);
       case 'number': return String(3 + i);
       case 'decimal': return (10 + i * 5).toFixed(2);
       case 'boolean': return 'true';
       case 'date': return '2026-01-01';
       case 'datetime': return '2026-01-01T10:00:00Z';
+      case 'localdatetime': return '2026-01-01T10:00:00';
+      case 'timezone': return 'Europe/Madrid';
       case 'duration': return 'PT1H';
       default:
         if (field === 'id' || field.endsWith('.id')) return field === 'id' && coll.sampleId ? String(coll.sampleId) : String(i + 1);
-        return 'ejemplo';
+        return 'example';
     }
   };
-  if (op === 'in') return decl.type === 'boolean' ? 'true,false' : `${one(0)},${one(1)}`;
+  if (op === 'in' || op === 'nin') return decl.type === 'boolean' ? 'true,false' : `${one(0)},${one(1)}`;
   return one(0);
 }
 
@@ -264,7 +271,7 @@ function includePaths(c, doc, prefix = '', depth = Number.isInteger(c.include_de
   return out;
 }
 
-// Ids de ejemplo: el del primer elemento y, en una subcolección, los de sus padres (§4.2, §5.1).
+// Sample ids: the first item's and, in a subcollection, those of its parents (§4.2, §5.1).
 async function findSamples(cname, coll, ctx, opts, samples, depth = 0) {
   if (samples.has(cname)) return samples.get(cname);
   const doc = ctx.doc;
@@ -296,21 +303,21 @@ async function findSamples(cname, coll, ctx, opts, samples, depth = 0) {
         }
       }
     }
-  } catch { /* sin ejemplo: las variables se quedan en 1 */ }
+  } catch { /* no sample: the variables stay at 1 */ }
   samples.set(cname, found);
   return found;
 }
 
-// ── Modelo intermedio: una lista de peticiones por colección ──────────────────
-// Cada petición: { name, method, path (con {{variables}}), query: [[k, v]], headers: [[k, v]],
-//   body (objeto o undefined), contentType, read (true si es de lectura), note, save: {etag|next} }
+// ── Intermediate model: a list of requests per collection ─────────────────────
+// Each request: { name, method, path (with {{variables}}), query: [[k, v]], headers: [[k, v]],
+//   body (object or undefined), contentType, read (true if it is a read), note, save: {etag|next} }
 function buildRequests(name, c, ctx) {
   const reqs = [];
   const profiles = ctx.doc.profiles ?? [];
   const query = profiles.includes('query');
   const writes = profiles.includes('writes');
   const actionsExt = (ctx.doc.extensions ?? []).includes('actions');
-  // Plantilla de URI (§4.2): {id} → {{variable}}; las variables entran en el entorno.
+  // URI template (§4.2): {id} → {{variable}}; the variables go into the environment.
   let vi = 0;
   const path = String(c.path).replace(/\{([^}]+)\}/g, (_, v) => {
     const key = `${name}_path_${v.replace(/[^A-Za-z0-9_]/g, '_')}`;
@@ -318,119 +325,193 @@ function buildRequests(name, c, ctx) {
     return `{{${key}}}`;
   });
   const idVar = `${name}_id`, etagVar = `${name}_etag`;
+  const localized = isObject(c.localized) ? Object.keys(c.localized) : [];
   ctx.vars[idVar] = String(c.sampleId ?? ctx.vars[idVar] ?? '1');
   if (writes) ctx.vars[etagVar] ??= '';
   const item = `${path}/{{${idVar}}}`;
   const has = (list, m) => !Array.isArray(list) || list.includes(m);
   const limit = Math.min(10, Number.isInteger(c.max_limit) ? c.max_limit : 10);
+  const filters = Object.entries(isObject(c.filter) ? c.filter : {}).filter(([, d]) => usableFilter(d));
+  const named = Object.entries(isObject(c.named_filters) ? c.named_filters : {})
+    .filter(([, d]) => isObject(d) && (d.type === undefined || FILTER_TYPES.includes(d.type)));
+  // §6.1: a required filter goes in every list request, or it gives invalid_parameter.
+  const required = [
+    ...filters.filter(([, d]) => d.required === true).map(([field, d]) => {
+      const ops = (Array.isArray(d.ops) ? d.ops : []).filter((o) => FILTER_OPS.includes(o) && o !== 'null');
+      const op = ops.includes('eq') ? 'eq' : ops[0] ?? 'eq';
+      return [field, [op === 'eq' ? `filter[${field}]` : `filter[${field}][${op}]`, filterValue(field, d, c, op)]];
+    }),
+    ...named.filter(([, d]) => d.required === true).map(([n, d]) => [n, [`filter[${n}]`, d.type === undefined ? '' : filterValue(n, d, c, 'eq')]]),
+  ];
+  const req = (except) => (query ? required.filter(([f]) => f !== except).map(([, q]) => q) : []);
+  // §6.1: default filters, switches declared "default": true, apply unless turned off with false.
+  const defaults = named.filter(([, d]) => d.default === true && d.type === undefined).map(([n]) => n);
+  const defaultsNote = defaults.length ? ` Default filters apply: ${defaults.join(', ')}; filter[name]=false turns one off (§6.1).` : '';
+  // §4.3: a collection whose methods leave out GET cannot be listed.
+  const listable = has(c.methods, 'GET');
 
-  if (has(c.methods, 'GET')) {
-    reqs.push({ name: `Listar ${name}`, method: 'GET', path, query: query ? [['limit', String(limit)]] : [], read: true,
-      note: 'Pagina siguiendo next de la respuesta hasta que sea null; el cursor es opaco (§5.2, §6.4).', save: { next: `${name}_next` } });
+  if (listable) {
+    reqs.push({ name: `List ${name}`, method: 'GET', path, query: [...req(), ...(query ? [['limit', String(limit)]] : [])], read: true,
+      note: `Page by following next in the response until it is null; the cursor is opaque (§5.2, §6.4).${defaultsNote}${required.length ? ` Required filters: ${required.map(([f]) => f).join(', ')} (§6.1).` : ''}`,
+      save: { next: `${name}_next` } });
+    // §5.2: the request for a full copy turns off every default filter; with a required filter there is none.
+    if (query && defaults.length && !required.length) {
+      reqs.push({ name: `List all ${name}`, method: 'GET', path, query: [...defaults.map((n) => [`filter[${n}]`, 'false']), ['limit', String(limit)]], read: true,
+        note: 'The request for a full copy: every default filter turned off and no other filter (§5.2, §6.1).' });
+    }
     if (query) {
-      for (const [field, decl] of Object.entries(isObject(c.filter) ? c.filter : {})) {
-        // §4.2: un filtro de tipo desconocido, o un operador desconocido, no se usa.
-        if (!isObject(decl) || !FILTER_TYPES.includes(decl.type)) continue;
+      for (const [field, decl] of filters) {
+        // §4.2: a filter of unknown type, or an unknown operator, is not used.
         const ops = (Array.isArray(decl.ops) ? decl.ops : []).filter((o) => FILTER_OPS.includes(o));
         if (!ops.length) continue;
         const op = ops[0];
         const key = op === 'eq' ? `filter[${field}]` : `filter[${field}][${op}]`;
-        reqs.push({ name: `Filtrar ${name} por ${field} (${op})`, method: 'GET', path, query: [[key, filterValue(field, decl, c, op)], ['limit', String(limit)]], read: true,
-          note: `Operadores declarados para ${field}: ${ops.join(', ')} (§6.1).` });
+        // §6.1 (council, round 3, decisions 8 and 9): null on a to-many relationship or a list field, with or without
+        // quantifier some, tests the whole group, never each element.
+        const group = decl.quantifier === 'some' || c.relations?.[field]?.many === true || c.schemasResolved?.item?.properties?.[field]?.type === 'array';
+        reqs.push({ name: `Filter ${name} by ${field} (${op})`, method: 'GET', path, query: [...req(field), [key, filterValue(field, decl, c, op)], ['limit', String(limit)]], read: true,
+          note: `Operators declared for ${field}: ${ops.join(', ')} (§6.1).${decl.quantifier === 'some' ? ' Some related item, or element, matches (quantifier some).' : ''}`
+            + (group && ops.includes('null') ? ` ${field}[null] tests the whole list, never each element: true gives the items with no related item or element (an empty list, an absent field and null are the same), false those with some; next to other filters on ${field}, true gives the items where no element meets them all at once and false those where some does; only one null filter per group, ${field} or a path through it, or the server answers invalid_parameter.` : '') });
       }
       const sort = Array.isArray(c.sort) ? c.sort.filter((s) => typeof s === 'string') : [];
       if (sort.length) {
         const keys = sort.filter((s) => s !== 'id').slice(0, 2);
         const value = keys.length ? [`-${keys[0]}`, ...keys.slice(1)].join(',') : '-id';
-        reqs.push({ name: `Ordenar ${name}`, method: 'GET', path, query: [['sort', value], ['limit', String(limit)]], read: true,
-          note: `Claves de orden declaradas: ${sort.join(', ')}; - delante para descendente (§6.2).` });
+        reqs.push({ name: `Sort ${name}`, method: 'GET', path, query: [...req(), ['sort', value], ['limit', String(limit)]], read: true,
+          note: `Declared sort keys: ${sort.join(', ')}; prefix - for descending (§6.2).` });
       }
       const fields = pickFields(c, ctx);
       if (fields.length) {
-        reqs.push({ name: `Campos de ${name}`, method: 'GET', path, query: [['fields', fields.join(',')], ['limit', String(limit)]], read: true,
-          note: 'Solo esos campos, más id y los miembros que empiezan por _ (§6.3).' });
+        reqs.push({ name: `Fields of ${name}`, method: 'GET', path, query: [...req(), ['fields', fields.join(',')], ['limit', String(limit)]], read: true,
+          note: 'Only those fields, plus id and the members starting with _ (§6.3).' });
       }
       if (c.count === 'exact' || c.count === 'estimated') {
-        reqs.push({ name: `Contar ${name}`, method: 'GET', path, query: [['count', 'true'], ['limit', '1']], read: true,
-          note: `Añade total${c.count === 'estimated' ? ' y total_estimated' : ''} (§6.5).` });
+        reqs.push({ name: `Count ${name}`, method: 'GET', path, query: [...req(), ['count', 'true'], ['limit', '1']], read: true,
+          note: `Adds total${c.count === 'estimated' ? ' and total_estimated' : ''} (§6.5).` });
       }
     }
   }
-  // §9: una lectura con include de las relaciones que lo admiten y, hasta include_depth, las de sus
-  // destinos. Una relación a varias colecciones (to como lista) solo va al final del camino.
+  // §9: a read with include of the relations that allow it and, up to include_depth, those of their
+  // destinations. A relation to several collections (to as a list) goes only at the end of the path.
   const incl = profiles.includes('relations') ? includePaths(c, ctx.doc) : [];
-  if (incl.length && has(c.methods, 'GET')) {
-    reqs.push({ name: `Incluir relaciones de ${name}`, method: 'GET', path, query: [['include', incl.join(',')], ...(query ? [['limit', String(limit)]] : [])], read: true,
-      note: `Relaciones incluidas: ${incl.join(', ')} (§9). Una relación a varias colecciones lleva type en cada objeto, y una a un elemento de una subcolección, href (§3).` });
+  if (incl.length && listable) {
+    reqs.push({ name: `Include relations of ${name}`, method: 'GET', path, query: [...req(), ['include', incl.join(',')], ...(query ? [['limit', String(limit)]] : [])], read: true,
+      note: `Included relations: ${incl.join(', ')} (§9). A relation to several collections carries type in each object, and one to an item of a subcollection, href (§3).` });
   }
   if (has(c.item_methods, 'GET')) {
-    reqs.push({ name: `Obtener ${name}`, method: 'GET', path: item, query: [], read: true,
-      note: writes ? `Guarda la ETag de la respuesta en ${etagVar} para usarla en If-Match (§7.2).` : null,
+    reqs.push({ name: `Get ${name}`, method: 'GET', path: item, query: [], read: true,
+      note: writes ? `Saves the response ETag in ${etagVar} for use in If-Match (§7.2).` : null,
       save: writes ? { etag: etagVar } : undefined });
   }
-  if (has(c.methods, 'POST')) {
+  // §5.1 (council, round 3, decision 1): schemas.create announces creation from JSON; a collection with upload and
+  // without it only takes files, so it gets no JSON create.
+  const createsFromJson = !isObject(c.upload) || (isObject(c.schemas) && c.schemas.create !== undefined);
+  if (has(c.methods, 'POST') && createsFromJson) {
     const headers = [['Content-Type', 'application/json']];
     if (ctx.idempotencyKeys) headers.push(['Idempotency-Key', `"${randomUUID()}"`]);
-    // §5.1: con id_from "client" el POST lleva id (un UUID aleatorio, §13.6); con cualquier otro
-    // valor, o sin él, no lo lleva: lo asigna el servidor ("either" lo admite, pero no hace falta)
-    // y con un valor desconocido un cliente no DEBE mandarlo.
-    const body = sample(c.schemasResolved.create ?? {});
+    // §5.1: with id_from "client" the POST carries an id (a random UUID, §13.6); with any other
+    // value, or without it, it does not carry one: the server assigns it ("either" allows it, but it is not needed)
+    // and with an unknown value a client MUST NOT send it.
+    // §3: a localized field is read-only; the client writes its language map.
+    const body = sample(c.schemasResolved.create ?? {}, 0, localized);
     if (isObject(body)) { delete body.id; if (c.id_from === 'client') body.id = randomUUID(); }
     const notes = [];
-    if (ctx.idempotencyKeys) notes.push('Repetir la petición con la misma Idempotency-Key no crea otro elemento (§7.1); cámbiala para crear otro.');
-    else if (ctx.anonymousRefused) notes.push('Sin Idempotency-Key: la API la rechaza sin credenciales ("anonymous": false, §7.1).');
-    if (c.id_from === 'client') notes.push('El id lo elige el cliente (id_from "client", §5.1): uno nuevo y aleatorio en cada alta.');
-    reqs.push({ name: `Crear en ${name}`, method: 'POST', path, query: [], headers, body, note: notes.join(' ') || null });
+    if (ctx.idempotencyKeys) notes.push('Repeating the request with the same Idempotency-Key does not create another item (§7.1); change it to create another.');
+    else if (ctx.anonymousRefused) notes.push('No Idempotency-Key: the API refuses it without credentials ("anonymous": false, §7.1).');
+    if (c.id_from === 'client') notes.push('The client chooses the id (id_from "client", §5.1): a new random one on each create.');
+    // §5.1 (decision 2): beside upload, a JSON POST always creates an item; a JSON file only goes as multipart, and
+    // (round 4, decisions 1b and 4b) a +json body is a file, and the file part carries a filename.
+    if (isObject(c.upload)) notes.push('The collection also takes files: this JSON body always creates an item from its fields, never a file; a JSON file goes as the file part of multipart/form-data, with a filename (a generic one such as file if it has none), and a +json body such as application/ld+json is a file (§5.1).');
+    reqs.push({ name: `Create in ${name}`, method: 'POST', path, query: [], headers, body, note: notes.join(' ') || null });
   }
   if (has(c.item_methods, 'PATCH')) {
     const headers = [['Content-Type', 'application/merge-patch+json']];
     if (writes) headers.push(['If-Match', `{{${etagVar}}}`]);
-    reqs.push({ name: `Actualizar ${name}`, method: 'PATCH', path: item, query: [], headers,
-      body: samplePatch(c.schemasResolved.update, c.schemasResolved.create),
-      note: writes ? `Merge patch (§4.3). If-Match lleva la ETag de «Obtener ${name}», con sus comillas (§7.2).` : 'Merge patch (§4.3).' });
+    reqs.push({ name: `Update ${name}`, method: 'PATCH', path: item, query: [], headers,
+      body: samplePatch(c.schemasResolved.update, c.schemasResolved.create, localized),
+      note: (writes ? `Merge patch (§4.3). If-Match carries the ETag from "Get ${name}", with its quotes (§7.2).` : 'Merge patch (§4.3).')
+        + (c.upsert === true ? ' With upsert, a PATCH to a free id creates the item (201); If-None-Match: * makes it only create (§5.1).' : '') });
   }
   if (has(c.item_methods, 'DELETE')) {
     const headers = writes ? [['If-Match', `{{${etagVar}}}`]] : [];
-    reqs.push({ name: `Borrar ${name}`, method: 'DELETE', path: item, query: [], headers,
-      note: writes ? `If-Match lleva la ETag de «Obtener ${name}» (§7.2).` : null });
+    reqs.push({ name: `Delete ${name}`, method: 'DELETE', path: item, query: [], headers,
+      note: writes ? `If-Match carries the ETag from "Get ${name}" (§7.2).` : null });
   }
   if (actionsExt && isObject(c.actions)) {
     for (const [action, a] of Object.entries(c.actions)) {
-      // §4.2: una acción con un on o un method desconocidos se trata como no declarada.
-      if (!isObject(a) || !ACTION_ON.includes(a.on) || (a.method !== undefined && a.method !== 'GET' && a.method !== 'POST')) continue;
-      const method = a.method === 'GET' ? 'GET' : 'POST';
-      const target = `${a.on === 'collection' ? path : item}:${action}`;
-      const headers = [];
-      let body;
-      if (method === 'POST') {
-        const input = c.actionInputs?.[action];
-        body = input ? sample(input) : {};
-        headers.push(['Content-Type', 'application/json']);
-        if (ctx.idempotencyKeys && a.idempotent === false) headers.push(['Idempotency-Key', `"${randomUUID()}"`]);
-      }
-      reqs.push({ name: `Acción ${action} (${a.on === 'collection' ? 'colección' : 'elemento'})`, method, path: target, query: [], headers, body,
-        read: method === 'GET', note: [a.description, `safe: ${a.safe === true}, idempotent: ${a.idempotent === true} (§11.1).`].filter(Boolean).join(' ') });
+      // §4.2: an action with an unknown on or method is treated as not declared.
+      if (!isObject(a) || !ACTION_ON.includes(a.on)) continue;
+      const r = actionRequest(action, a, `${a.on === 'collection' ? path : item}:${action}`, c.actionInputs?.[action], c, ctx);
+      if (r) reqs.push({ ...r, name: `Action ${action} (${a.on === 'collection' ? 'collection' : 'item'})` });
     }
   }
   for (const r of reqs) r.headers = [['Accept', 'application/json'], ...(r.headers ?? [])];
   return reqs;
 }
 
-// Un recurso suelto (singleton, §5.9): GET y, si lo declara o no declara methods, PATCH con If-Match.
+// The request of an action (§11.1), on a collection, an item or a singleton; null if its method is unknown (§4.2).
+function actionRequest(action, a, target, input, owner, ctx) {
+  if (a.method !== undefined && a.method !== 'GET' && a.method !== 'POST') return null;
+  const method = a.method === 'GET' ? 'GET' : 'POST';
+  const headers = [];
+  const query = [];
+  let body;
+  if (method === 'POST') {
+    body = input ? sample(input) : {};
+    headers.push(['Content-Type', 'application/json']);
+    if (ctx.idempotencyKeys && a.idempotent === false) headers.push(['Idempotency-Key', `"${randomUUID()}"`]);
+  } else {
+    // §11.1: the required params of a GET action, a list one with two values.
+    for (const [p, d] of Object.entries(isObject(a.params) ? a.params : {})) {
+      if (!isObject(d) || d.required !== true) continue;
+      query.push([p, filterValue(p, { type: FILTER_TYPES.includes(d.type) ? d.type : 'string', values: d.values }, owner, d.list === true ? 'in' : 'eq')]);
+    }
+  }
+  // §11.1: without effects an unsafe action has all three and a safe one none; an unknown value counts as all three.
+  const declared = Array.isArray(a.effects) ? (a.effects.some((x) => !EFFECTS.includes(x)) ? EFFECTS : a.effects) : null;
+  const effects = declared ?? (a.safe === true ? null : EFFECTS);
+  // §5.3 and §11.1: a GET action without params is "params": {}: any query parameter gives unsupported_parameter.
+  const noParams = method === 'GET' && !(isObject(a.params) && Object.keys(a.params).length)
+    && 'It takes no query parameters: any one gives unsupported_parameter (§5.3, §11.1).';
+  const note = [a.description, `safe: ${a.safe === true}, idempotent: ${a.idempotent === true} (§11.1).`, noParams,
+    effects && `Effects: ${effects.length ? effects.join(', ') : 'none'}${Array.isArray(a.effects) && effects === a.effects ? '' : ' (undeclared or unknown: all three)'} (§11.1).`].filter(Boolean).join(' ');
+  return { method, path: target, query, headers, body, read: method === 'GET', note };
+}
+
+// A standalone resource (singleton, §5.9): GET and, if it declares it or declares no methods, PATCH with If-Match.
 function buildSingletonRequests(name, prefix, sg, ctx) {
   const writes = (ctx.doc.profiles ?? []).includes('writes');
   const etagVar = `${prefix}_etag`;
   if (writes) ctx.vars[etagVar] ??= '';
   const has = (m) => !Array.isArray(sg.methods) || sg.methods.includes(m);
-  const reqs = [{ name: `Obtener ${name}`, method: 'GET', path: sg.path, query: [], read: true,
-    note: `Recurso suelto (§5.9).${writes ? ` Guarda la ETag en ${etagVar} para usarla en If-Match (§7.2).` : ''}`,
+  // §5.9: a singleton with parent has a template whose variables take the ids of the parent items.
+  let vi = 0;
+  const path = sg.path.replace(/\{([^}]+)\}/g, (_, v) => {
+    const key = `${prefix}_path_${v.replace(/[^A-Za-z0-9_]/g, '_')}`;
+    ctx.vars[key] = String(sg.pathSamples?.[vi++] ?? ctx.vars[key] ?? '1');
+    return `{{${key}}}`;
+  });
+  const reqs = [{ name: `Get ${name}`, method: 'GET', path, query: [], read: true,
+    note: `Singleton resource (§5.9).${writes ? ` Saves the ETag in ${etagVar} for use in If-Match (§7.2).` : ''}`,
     save: writes ? { etag: etagVar } : undefined }];
   if (has('PATCH')) {
     const headers = [['Content-Type', 'application/merge-patch+json']];
     if (writes) headers.push(['If-Match', `{{${etagVar}}}`]);
-    reqs.push({ name: `Actualizar ${name}`, method: 'PATCH', path: sg.path, query: [], headers,
+    // §4.3 and §5.9: the effects of its PATCH come from method_effects; undeclared, or with an unknown value, all three.
+    const fx = isObject(sg.method_effects) && Object.hasOwn(sg.method_effects, 'PATCH') ? sg.method_effects.PATCH : undefined;
+    const effects = Array.isArray(fx) && fx.every((x) => EFFECTS.includes(x)) ? fx : null;
+    const effectsNote = ` Effects: ${effects ? (effects.length ? effects.join(', ') : 'none') : `${EFFECTS.join(', ')} (undeclared or unknown: all three)`} (§4.3, §11.1).`;
+    reqs.push({ name: `Update ${name}`, method: 'PATCH', path, query: [], headers,
       body: samplePatch(sg.schemasResolved.update, sg.schemasResolved.item),
-      note: writes ? `Merge patch (§5.9). If-Match lleva la ETag de «Obtener ${name}» (§7.2).` : 'Merge patch (§5.9).' });
+      note: (writes ? `Merge patch (§5.9). If-Match carries the ETag from "Get ${name}" (§7.2).` : 'Merge patch (§5.9).') + effectsNote });
+  }
+  // §5.9 and §11.1: a singleton's actions carry no on and are used at {path}:{name}.
+  if ((ctx.doc.extensions ?? []).includes('actions') && isObject(sg.actions)) {
+    for (const [action, a] of Object.entries(sg.actions)) {
+      if (!isObject(a)) continue;
+      const r = actionRequest(action, a, `${path}:${action}`, sg.actionInputs?.[action], sg, ctx);
+      if (r) reqs.push({ ...r, name: `Action ${action}` });
+    }
   }
   for (const r of reqs) r.headers = [['Accept', 'application/json'], ...(r.headers ?? [])];
   return reqs;
@@ -439,11 +520,11 @@ function buildSingletonRequests(name, prefix, sg, ctx) {
 function pickFields(c, ctx) {
   const props = isObject(c.schemasResolved.item?.properties) ? Object.keys(c.schemasResolved.item.properties) : [];
   const pool = props.length ? props : [...Object.keys(isObject(c.filter) ? c.filter : {}), ...(Array.isArray(c.sort) ? c.sort : [])];
-  // §6.3: una ruta que entra en un mapa de idioma da invalid_parameter; solo campos de primer nivel.
+  // §6.3: a path that enters a language map gives invalid_parameter; top-level fields only.
   return [...new Set(pool.filter((f) => typeof f === 'string' && f !== 'id' && !f.includes('.') && !f.startsWith('_')))].slice(0, 2);
 }
 
-// ── Formato .http (REST Client y JetBrains) ───────────────────────────────────
+// ── .http format (REST Client and JetBrains) ──────────────────────────────────
 const enc = (v) => encodeURIComponent(v).replace(/%2C/gi, ',').replace(/%3A/gi, ':');
 const encKey = (k) => k.replace(/[^A-Za-z0-9_.\-[\]]/g, (ch) => encodeURIComponent(ch));
 const queryString = (q) => (q.length ? `?${q.map(([k, v]) => `${encKey(k)}=${enc(v)}`).join('&')}` : '');
@@ -451,9 +532,9 @@ const queryString = (q) => (q.length ? `?${q.map(([k, v]) => `${encKey(k)}=${enc
 function toHttp(model, out) {
   mkdirSync(out, { recursive: true });
   for (const coll of model.collections) {
-    const lines = [`# ${model.name} · ${coll.name}`, `# Generado por restep-export ${VERSION} a partir del descubrimiento (Restep ${model.doc.restep}).`];
+    const lines = [`# ${model.name} · ${coll.name}`, `# Generated by restep-export ${VERSION} from the discovery document (Restep ${model.doc.restep}).`];
     if (coll.description) lines.push(`# ${coll.description}`);
-    lines.push('# base_url y token salen del entorno (http-client.env.json o .vscode/settings.json).', '');
+    lines.push('# base_url and token come from the environment (http-client.env.json or .vscode/settings.json).', '');
     for (const k of coll.varNames) lines.push(`@${k} = ${model.vars[k]}`);
     lines.push('');
     for (const r of coll.requests) {
@@ -468,15 +549,15 @@ function toHttp(model, out) {
     writeFileSync(join(out, `${fileName(coll.name)}.http`), lines.join('\n'));
   }
   const env = { base_url: model.baseUrl, token: '' };
-  // JetBrains: http-client.env.json (el token, mejor en http-client.private.env.json, que no se versiona).
+  // JetBrains: http-client.env.json (the token is better in http-client.private.env.json, which is not versioned).
   writeFileSync(join(out, 'http-client.env.json'), JSON.stringify({ local: env }, null, 2) + '\n');
   writeFileSync(join(out, 'http-client.private.env.json'), JSON.stringify({ local: { token: '' } }, null, 2) + '\n');
-  // VS Code REST Client: entornos en la configuración del espacio de trabajo.
+  // VS Code REST Client: environments in the workspace settings.
   mkdirSync(join(out, '.vscode'), { recursive: true });
   writeFileSync(join(out, '.vscode', 'settings.json'), JSON.stringify({ 'rest-client.environmentVariables': { local: env } }, null, 2) + '\n');
 }
 
-// ── Formato Bruno (.bru) ──────────────────────────────────────────────────────
+// ── Bruno format (.bru) ───────────────────────────────────────────────────────
 const bruIndent = (text, n = 2) => text.split('\n').map((l) => (l ? ' '.repeat(n) + l : l)).join('\n');
 
 function toBruno(model, out) {
@@ -507,7 +588,7 @@ function toBruno(model, out) {
   });
 }
 
-// ── Formato Postman v2.1 ──────────────────────────────────────────────────────
+// ── Postman v2.1 format ───────────────────────────────────────────────────────
 function postmanUrl(r) {
   const raw = `{{base_url}}${r.path}${queryString(r.query)}`;
   return { raw, host: ['{{base_url}}'], path: r.path.split('/').filter(Boolean), ...(r.query.length && { query: r.query.map(([key, value]) => ({ key, value })) }) };
@@ -518,7 +599,7 @@ function toPostman(model, out) {
   const col = {
     info: {
       _postman_id: randomUUID(), name: model.name,
-      description: `Generado por restep-export ${VERSION} a partir del descubrimiento (Restep ${model.doc.restep}).`,
+      description: `Generated by restep-export ${VERSION} from the discovery document (Restep ${model.doc.restep}).`,
       schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
     },
     ...(model.auth && { auth: { type: 'bearer', bearer: [{ key: 'token', value: '{{token}}', type: 'string' }] } }),
@@ -547,32 +628,32 @@ function toPostman(model, out) {
   writeFileSync(join(out, `${fileName(model.name)}.postman_collection.json`), JSON.stringify(col, null, 2) + '\n');
 }
 
-const fileName = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'coleccion';
+const fileName = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'collection';
 
-// ── Principal ─────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 export async function exportCollection(opts) {
   const ctx = await loadDiscovery(opts);
   ctx.vars = {};
   const { doc } = ctx;
-  // §2: las rutas del descubrimiento son relativas a la raíz de la API, que puede tener ruta (/api/).
+  // §2: the discovery paths are relative to the API root, which may have a path (/api/).
   const baseUrl = opts.baseUrl ?? (ctx.root ? ctx.root.href.replace(/\/+$/, '') : 'http://localhost:8080');
   const auth = opts.auth === 'bearer' || (opts.auth === 'auto' && (doc.extensions ?? []).includes('oauth'));
   const name = opts.name ?? (ctx.root ? `Restep ${ctx.root.host}` : 'Restep');
-  // §7.1: con "anonymous": false, una petición sin credenciales no lleva Idempotency-Key.
+  // §7.1: with "anonymous": false, a request without credentials carries no Idempotency-Key.
   ctx.anonymousRefused = isObject(doc.idempotency) && doc.idempotency.anonymous === false && !auth && !opts.token && !opts.headers.authorization;
   ctx.idempotencyKeys = (doc.profiles ?? []).includes('writes') && !ctx.anonymousRefused;
   const collections = [];
-  const samples = new Map(); // nombre de colección → { id, vars: [id de cada padre] }
+  const samples = new Map(); // collection name → { id, vars: [id of each parent] }
   for (const [cname, c] of Object.entries(isObject(doc.collections) ? doc.collections : {})) {
-    if (!isObject(c) || typeof c.path !== 'string') { console.error(`restep-export: aviso: ${cname} no tiene path; se omite.`); continue; }
+    if (!isObject(c) || typeof c.path !== 'string') { console.error(`restep-export: warning: ${cname} has no path; skipped.`); continue; }
     const schemas = isObject(c.schemas) ? c.schemas : {};
     const coll = { ...c, schemasResolved: {} };
     for (const k of ['item', 'create', 'update']) coll.schemasResolved[k] = await resolveSchema(schemas[k], ctx, opts);
     coll.actionInputs = {};
     for (const [a, decl] of Object.entries(isObject(c.actions) ? c.actions : {})) coll.actionInputs[a] = await resolveSchema(decl?.input, ctx, opts);
-    // Un id de ejemplo por colección, del primer elemento. En una subcolección (§4.2: plantilla y
-    // parent) las variables toman los id de sus padres: se buscan, entre los primeros elementos del
-    // padre, uno cuya subcolección tenga algún elemento, para que «Obtener» no dé 404.
+    // One sample id per collection, from the first item. In a subcollection (§4.2: template and
+    // parent) the variables take the ids of their parents: among the first items of the
+    // parent, one is looked for whose subcollection has some item, so that "Get" does not give 404.
     if (ctx.root && opts.samples) {
       const found = await findSamples(cname, c, ctx, opts, samples);
       if (found.id) coll.sampleId = found.id;
@@ -583,24 +664,34 @@ export async function exportCollection(opts) {
     const varNames = Object.keys(ctx.vars).filter((k) => !before.has(k) || k.startsWith(`${cname}_`));
     collections.push({ name: cname, description: typeof c.description === 'string' ? c.description : null, requests, varNames });
   }
-  // Recursos sueltos (§5.9). Uno cuya ruta es una plantilla o que lleva parent se ignora: son formas
-  // reservadas para versiones menores.
-  for (const [sname, sg] of Object.entries(isObject(doc.singletons) ? doc.singletons : {})) {
-    if (!isObject(sg) || typeof sg.path !== 'string' || !sg.path.startsWith('/') || /[{}]/.test(sg.path) || 'parent' in sg) {
-      console.error(`restep-export: aviso: el recurso suelto ${sname} no tiene una ruta fija o lleva parent; se ignora (§5.9).`);
+  // Singletons (§5.9). A client ignores one whose path is a template without parent, or whose parent
+  // names no collection or singleton of the document.
+  const singletons = isObject(doc.singletons) ? doc.singletons : {};
+  const declared = (p) => typeof p === 'string' && (isObject(doc.collections?.[p]) || isObject(singletons[p]));
+  const parentIds = (sg, seen = new Set()) => { // the ids the template variables take, from the samples
+    if (typeof sg.parent !== 'string' || seen.has(sg.parent)) return [];
+    if (isObject(doc.collections?.[sg.parent])) { const f = samples.get(sg.parent); return f ? [...f.vars, f.id] : []; }
+    return isObject(singletons[sg.parent]) ? parentIds(singletons[sg.parent], new Set([...seen, sg.parent])) : [];
+  };
+  for (const [sname, sg] of Object.entries(singletons)) {
+    if (!isObject(sg) || typeof sg.path !== 'string' || !sg.path.startsWith('/')
+      || (sg.parent === undefined ? /[{}]/.test(sg.path) : !declared(sg.parent))) {
+      console.error(`restep-export: warning: the singleton ${sname} has a template without parent, or a parent the document does not declare; ignored (§5.9).`);
       continue;
     }
     const schemas = isObject(sg.schemas) ? sg.schemas : {};
-    const s = { ...sg, schemasResolved: {} };
+    const s = { ...sg, schemasResolved: {}, actionInputs: {} };
     for (const k of ['item', 'update']) s.schemasResolved[k] = await resolveSchema(schemas[k], ctx, opts);
-    const folder = collections.some((c) => c.name === sname) ? `${sname}-recurso` : sname;
+    for (const [a, decl] of Object.entries(isObject(sg.actions) ? sg.actions : {})) s.actionInputs[a] = await resolveSchema(decl?.input, ctx, opts);
+    s.pathSamples = parentIds(sg).map((x) => x ?? '1');
+    const folder = collections.some((c) => c.name === sname) ? `${sname}-resource` : sname;
     const prefix = folder.replace(/[^A-Za-z0-9_]/g, '_');
     const before = new Set(Object.keys(ctx.vars));
     const requests = buildSingletonRequests(sname, prefix, s, ctx);
     const varNames = Object.keys(ctx.vars).filter((k) => !before.has(k) || k.startsWith(`${prefix}_`));
     collections.push({ name: folder, description: typeof sg.description === 'string' ? sg.description : null, requests, varNames, singleton: true });
   }
-  if (!collections.length) console.error('restep-export: aviso: el descubrimiento no declara colecciones; solo se escriben los entornos.');
+  if (!collections.length) console.error('restep-export: warning: the discovery document declares no collections; only the environments are written.');
   const model = { name, doc, baseUrl, auth, vars: ctx.vars, collections };
   const out = resolve(opts.out);
   const written = [];
@@ -619,6 +710,6 @@ if (isMain) {
     const { model, written } = await exportCollection(opts);
     const n = model.collections.reduce((s, c) => s + c.requests.length, 0);
     for (const [f, dir] of written) console.log(`${f}: ${dir}`);
-    console.log(`${model.collections.length} colecciones, ${n} peticiones.`);
+    console.log(`${model.collections.length} collections, ${n} requests.`);
   } catch (e) { fail(e.message); }
 }
